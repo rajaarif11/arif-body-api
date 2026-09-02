@@ -6,7 +6,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 app = FastAPI(title="AK BODY API", docs_url="/docs")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 os.makedirs("uploads", exist_ok=True)
 os.makedirs("outputs", exist_ok=True)
@@ -23,13 +30,16 @@ def run_composite(user_img_path: str, template_path: str, output_path: str):
     tpl_img = Image.open(template_path).convert("RGBA")
     t_w, t_h = tpl_img.size
     u_w, u_h = user_img.size
+    
     scale = (t_w * 0.35) / max(int(u_w * 0.45), 1)
     new_w, new_h = int(u_w * scale), int(u_h * scale)
     user_resized = user_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    
     canvas = Image.new("RGBA", (t_w, t_h), (255, 255, 255, 0))
     offset_x = (t_w // 2) - (new_w // 2)
     offset_y = int(t_h * 0.10)
     canvas.paste(user_resized, (offset_x, offset_y), mask=user_resized.split()[3])
+    
     final_output = Image.alpha_composite(canvas, tpl_img)
     final_output.save(output_path, "PNG", optimize=True)
 
@@ -50,6 +60,8 @@ async def generate(data: GenerateRequest):
     if not os.path.exists(input_path):
         raise HTTPException(status_code=404, detail="Image not found")
     folder = os.path.join("templates", data.category.lower())
+    if not os.path.exists(folder):
+        raise HTTPException(status_code=404, detail="Category not found")
     templates = [f for f in os.listdir(folder) if f.endswith(".png")]
     if not templates:
         raise HTTPException(status_code=404, detail="No template available")
