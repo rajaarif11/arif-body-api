@@ -3,3 +3,5 @@ uvicorn[standard]
 pillow
 python-multipart
 pydantic
+opencv-python-headless
+numpy
