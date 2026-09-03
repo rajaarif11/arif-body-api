@@ -1,4 +1,6 @@
 import os, uuid
+import cv2
+import numpy as np
 from PIL import Image
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
@@ -20,28 +22,59 @@ os.makedirs("outputs", exist_ok=True)
 os.makedirs("templates/male", exist_ok=True)
 os.makedirs("templates/female", exist_ok=True)
 
+# প্রাক-প্রশিক্ষিত ফেস ডিটেক্টর লোড
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+
 class GenerateRequest(BaseModel):
     image: str
     category: str = "male"
     template: str = "auto"
 
-def run_composite(user_img_path: str, template_path: str, output_path: str):
-    user_img = Image.open(user_img_path).convert("RGBA")
-    tpl_img = Image.open(template_path).convert("RGBA")
-    t_w, t_h = tpl_img.size
-    u_w, u_h = user_img.size
+def auto_align_composite(user_img_path: str, template_path: str, output_path: str):
+    # ইউজার ছবি ওপেন ও কালার কনভার্ট
+    user_img_bgr = cv2.imread(user_img_path)
+    if user_img_bgr is None:
+        raise HTTPException(status_code=400, detail="Invalid image file")
     
-    scale = (t_w * 0.35) / max(int(u_w * 0.45), 1)
-    new_w, new_h = int(u_w * scale), int(u_h * scale)
-    user_resized = user_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    gray = cv2.cvtColor(user_img_bgr, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60))
     
-    canvas = Image.new("RGBA", (t_w, t_h), (255, 255, 255, 0))
-    offset_x = (t_w // 2) - (new_w // 2)
-    offset_y = int(t_h * 0.10)
-    canvas.paste(user_resized, (offset_x, offset_y), mask=user_resized.split()[3])
+    user_pil = Image.open(user_img_path).convert("RGBA")
+    tpl_pil = Image.open(template_path).convert("RGBA")
     
-    final_output = Image.alpha_composite(canvas, tpl_img)
-    final_output.save(output_path, "PNG", optimize=True)
+    u_w, u_h = user_pil.size
+    t_w, t_h = tpl_pil.size
+
+    if len(faces) > 0:
+        # সবচেয়ে বড় মুখটি সিলেক্ট করা
+        fx, fy, fw, fh = max(faces, key=lambda f: f[2] * f[3])
+        face_center_x = fx + (fw // 2)
+        chin_y = fy + int(fh * 1.05)  # চিবুকের আনুমানিক অবস্থান
+        
+        # মুখের চওড়ার সাপেক্ষে স্যুটের স্কেলিং (সাধারণত কাঁধ মুখের ৩ গুণ চওড়া হয়)
+        target_suit_w = int(fw * 3.2)
+        scale_factor = target_suit_w / t_w
+        target_suit_h = int(t_h * scale_factor)
+        
+        tpl_resized = tpl_pil.resize((target_suit_w, target_suit_h), Image.Resampling.LANCZOS)
+        
+        # স্যুটের কলার চিবুকের নিচে বসানোর জন্য অফসেট ক্যালকুলেশন
+        suit_x = face_center_x - (target_suit_w // 2)
+        # টেমপ্লেটের কলার সাধারণত টেমপ্লেটের টপ থেকে ৫-১০% নিচে থাকে
+        suit_y = chin_y - int(target_suit_h * 0.08)
+    else:
+        # যদি কোনো ফেস ডিটেক্ট না হয় (ফলব্যাক স্কেল)
+        scale_factor = u_w / t_w
+        target_suit_w = u_w
+        target_suit_h = int(t_h * scale_factor)
+        tpl_resized = tpl_pil.resize((target_suit_w, target_suit_h), Image.Resampling.LANCZOS)
+        suit_x = 0
+        suit_y = int(u_h * 0.40)
+
+    # ইউজারের মূল ক্যানভাসে স্যুটটি আলফা ব্লেন্ড করা
+    canvas = user_pil.copy()
+    canvas.paste(tpl_resized, (suit_x, suit_y), mask=tpl_resized.split()[3])
+    canvas.save(output_path, "PNG", optimize=True)
 
 @app.post("/api/v1/upload")
 async def upload_file(file: UploadFile = File(...)):
@@ -65,11 +98,14 @@ async def generate(data: GenerateRequest):
     templates = [f for f in os.listdir(folder) if f.endswith(".png")]
     if not templates:
         raise HTTPException(status_code=404, detail="No template available")
+    
     chosen = templates[0] if data.template == "auto" else f"{data.template}.png"
     tpl_path = os.path.join(folder, chosen)
+    
     out_file = f"AK-{uuid.uuid4().hex[:6].upper()}.png"
     out_path = os.path.join("outputs", out_file)
-    run_composite(input_path, tpl_path, out_path)
+    
+    auto_align_composite(input_path, tpl_path, out_path)
     return {"success": True, "download_url": f"/outputs/{out_file}"}
 
 @app.get("/outputs/{filename}")
